@@ -1,6 +1,6 @@
 * NOTICE
 
-This repository is no longer updated. Check [[http://www.edcint.co.nz/checkwmiplus/][upstream]].
+This repository is looking for someone to maintain it.
 
 * check_wmi_plus
 
