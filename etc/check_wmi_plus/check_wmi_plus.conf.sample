@@ -51,6 +51,10 @@ $compiled_ini_file="$wmi_data_dir/check_wmi_plus.compiledini";
 
 # ---------------------- OTHER CONFIGURATION -------------------------
 
+# wmic_server is the new way to do wmi calls to windows and replaces the old wmic binary
+# includes the protocol, IP address (or hostname) and port number where the calls to the wmic_server can be made
+$wmic_server_uri='http://127.0.0.1:2313/wmic';
+
 # Disable the check of Perl Module versions
 # The module versions are checked because the are often the cause of the plugin not working correctly
 # If you want support you will need to reproduce the fault with the supported versions of the modules ie enable this check

@@ -43,10 +43,10 @@ use lib "/usr/lib64/nagios/plugins";
 #================================= DECLARATIONS ===============================
 #==============================================================================
 
-our $VERSION=1.66;
+our $VERSION=1.67;
 
 # which version of PRO (if used does this require)
-our $requires_PRO_VERSION=1.30;
+our $requires_PRO_VERSION=1.32;
 
 use strict;
 use Getopt::Long;
@@ -56,6 +56,9 @@ use Data::Dumper;
 use Storable;
 use Config::IniFiles;
 use DateTime;
+use LWP::UserAgent;
+use HTTP::Request::Common qw(GET POST);
+use JSON;
 
 # command line option declarations
 our $opt_auth_file='';
@@ -82,6 +85,7 @@ our $opt_keep_state_id='';
 our $opt_helper_state_expiry='3600'; # default number of seconds after which helper state results are considered expired
 our $opt_keep_state_expiry='3600'; # default number of seconds after which keep state results are considered expired
 our $opt_join_state_expiry='3600'; # default number of seconds after which join state results are considered expired
+our $opt_use_legacy_wmic_client=0; # default is false ie do not use the legacy client
 our $opt_texthelp=0;
 our $opt_command_examples='';
 our $opt_ignore_versions='';
@@ -140,6 +144,7 @@ our $wmic_split_delimiter='\|';
 
 # key is the full name of the Module Version variable
 # value is the minimum module version we'd like to use
+# use 0 (zero) for no check
 my %good_module_versions=(
    ']',5.01,
    'DateTime::VERSION',0.66,
@@ -148,7 +153,10 @@ my %good_module_versions=(
    'Number::Format::VERSION',1.73,
    'Data::Dumper::VERSION',2.125,
    'Config::IniFiles::VERSION',2.58,
-   'Storable::VERSION',2.22
+   'Storable::VERSION',2.22,
+   'LWP::UserAgent::VERSION',0,             # not version checked
+   'HTTP::Request::Common::VERSION',0,      # not version checked
+   'JSON::VERSION',0,                       # not version checked
    );
 
 my %displaywhatwhen_mode_list=();
@@ -234,6 +242,10 @@ our $usage_db_file="$wmi_data_dir/check_wmi_plus.usagedb";
 # PRO only: this is the file where the compiled ini files are stored
 our $compiled_ini_file="$wmi_data_dir/check_wmi_plus.compiledini";
 
+# ---------------------- DEFAULT wmic_server CONFIG -------------------------
+# wmic_server is the new way to do wmi calls to windows and replaces the old wmic binary
+# includes the protocol, IP address (or hostname) and port number where the calls to the wmic_server can be made
+our $wmic_server_uri='http://127.0.0.1:2313/wmic';
 
 # ---------------------- OTHER CONFIGURATION -------------------------
 
@@ -624,6 +636,7 @@ GetOptions(
    "keepexpiry=s"                         => \$opt_keep_state_expiry,
    "keepid=s"                             => \$opt_keep_state_id,
    "keepstate!"                           => \$opt_keep_state,
+   "legacywmicclient"                     => \$opt_use_legacy_wmic_client,
    "logkeep"                              => \$opt_log_usage_keep,
    "logshow"                              => \$opt_log_usage_show,
    "logsuffix=s"                          => \$opt_log_usage_suffix,
@@ -1018,7 +1031,7 @@ no strict "refs"; # just turn off strict refs for a little so we can use strings
 my $versions_ok=1;
 foreach my $moduleversion (keys %good_module_versions) {
    # do as little as possible in this loop to make it faster
-   if ($$moduleversion lt $good_module_versions{$moduleversion}) {
+   if ($$moduleversion lt $good_module_versions{$moduleversion} && $good_module_versions{$moduleversion}>0) {
       # found a bad one - jump out of loop
       $versions_ok=0;
       last;
@@ -1030,7 +1043,7 @@ if (!$versions_ok || $force_show) {
    printf("%-19s %19s %7s %-10s\n",'MODULE_NAME','INSTALLED_VERSION','STATUS','DESIRED_VERSION');
    foreach my $moduleversion (keys %good_module_versions) {
       my $status='ok';
-      if ($$moduleversion lt $good_module_versions{$moduleversion}) {
+      if ($$moduleversion lt $good_module_versions{$moduleversion} && $good_module_versions{$moduleversion}>0) {
          $status='BAD';
       }
       my $module_name=$moduleversion;
@@ -1038,7 +1051,7 @@ if (!$versions_ok || $force_show) {
       if ($module_name eq ']') {
          $module_name='Perl Version';
       }
-      printf("%-19s %19s %7s %10s\n",$module_name,$$moduleversion,$status,$good_module_versions{$moduleversion});
+      printf("%-21s %19s %7s %10s\n",$module_name,$$moduleversion,$status,$good_module_versions{$moduleversion});
    }
 }
 
@@ -1391,6 +1404,45 @@ if ($incoming ne '' && looks_like_number($incoming)) {
    return $incoming;
 }
 }
+#-------------------------------------------------------------------------------------
+sub call_wmic_server {
+my ($query)=@_;
+
+# we also need to make sure that any " in the query are converted to \" since that is what is required for JSON
+$query=~s/\"/\\\"/g;
+
+my @json_params=();
+# set up the http paramters for the call
+push(@json_params,"\"id\":\"$opt_username\"");
+push(@json_params,"\"host\":\"$the_arguments{'_host'}\"");
+push(@json_params,"\"query\":\"$query\"");
+push(@json_params,"\"namespace\":\"$opt_wminamespace\"");
+if ($opt_password) {
+   push(@json_params,"\"token\":\"$opt_password\"");
+}
+
+my $json="{" . join(",",@json_params) . "}";
+$debug && print "JSON Request to $wmic_server_uri is: $json\n";
+
+my $req = HTTP::Request->new( 'POST', $wmic_server_uri );
+$req->header( 'Content-Type' => 'application/json' );
+$req->content( $json );
+
+my $ua = new LWP::UserAgent;
+my $res = $ua->request($req);
+$debug && print "HTTP Status:" . $res->status_line . "\n";
+
+my $content='';
+
+if ($res->status_line =~ /^2/) {
+   # the page was retrieved ok ie we got a http status that started with a 2 eg 200
+   $content=$res->content;
+} else {
+   $content='ERROR:' . $res->status_line;
+}
+
+return $content;
+}
 #-------------------------------------------------------------------------
 sub get_wmi_data {
 # perform the same WMI query 1 or more times with a time delay in between and return the results in an array
@@ -1467,84 +1519,153 @@ $wmi_query=~s/\{(.*?)\}/$the_arguments{$1}/g;
 $wmi_query=~s/'/\"/g;
 #$wmi_query=~s/'/\\'/g; # we used to escape the '
 
-if ($slash_conversion) {
-   # replace any / in the WMI query \\ since \ are difficult to use in linux on the command line
-   # we replace it with \\ to pass an actual \ to the csmmand line
-   # use # as the delimiter for the regex to make it more readable (still need to escape / and \ though)
-   $wmi_query=~s#\/#\\\\#g;
-}
+my $wmi_commandline;
+my $wmi_query_quote;
 
-# How to use an alternate namespace using wmic
-# "SELECT * From rootdse" --namespace=root/directory/ldap
-# check delimiter
-# if it is not | then add it to the command line
-if ($wmic_delimiter ne '|') {
-   push(@wmi_args,'--delimiter',"$wmic_delimiter");
-}
+if ($opt_use_legacy_wmic_client) {
 
-# build up the extra wmic arguments if defined
-if ($#opt_extra_wmic_args>=0) {
-   # Each array index should contain a complete argument for wmic eg --option=#client ntlmv2 auth#=Yes
-   # To save difficulty with quoting we translate # into "
-   # So --option=#client ntlmv2 auth#=Yes becomes --option="client ntlmv2 auth"=Yes
-   foreach my $arg (@opt_extra_wmic_args) {
-      $arg=~s/#/"/g;
-      # not sure if this will work when using the wmiclient library
-      push(@wmi_args,$arg);
-      $debug && print "Extra Wmic Arguments specified:$arg\n";
+   if ($slash_conversion) {
+      # replace any / in the WMI query \\ since \ are difficult to use in linux on the command line
+      # we replace it with \\ to pass an actual \ to the csmmand line
+      # use # as the delimiter for the regex to make it more readable (still need to escape / and \ though)
+      $wmi_query=~s#\/#\\\\#g;
    }
-}
 
-my $wmi_query_quote="'";
-if ($host_os =~ m/win32$/i) {
-   # if running on Windows we need to deal with the ' in the query and change the command line to quote it using \"
-   $wmi_query=~s/\"/\\\"/g;
-   $wmi_query_quote='"';
-}
+   # How to use an alternate namespace using wmic
+   # "SELECT * From rootdse" --namespace=root/directory/ldap
+   # check delimiter
+   # if it is not | then add it to the command line
+   if ($wmic_delimiter ne '|') {
+      push(@wmi_args,'--delimiter',"$wmic_delimiter");
+   }
 
-# if user name/password specified they always override the auth file
-# only check for the username so that this allows an empty password
-if ($opt_username) {
-   push(@wmi_args,'-U',"${opt_username}%${opt_password}");
-} elsif ($opt_auth_file) {
-   # quick check on the auth file
-   if (-s -r $opt_auth_file || $opt_ignore_auth_file_warnings) {
-      # now set up the auth file command line
-      push(@wmi_args,'-A',$opt_auth_file);
-   } else {
-      print "The Authentication File \"$opt_auth_file\" either does not exist, can not be accessed or is empty. You need this to allow $wmic_command to authenticate to the Windows machine. See --help for information on the file requirements. You can ignore this warning and proceed, passing the file to wmic by specifying the --IgnoreAuthFileWarnings argument. If the file really does have access problems wmic will not work either and may fail in a not so nice way eg hang on waiting for STDIN.\n";
-      if ($debug) {
-         print "Details for \"$opt_auth_file\" and current User\n";
-         print "ls -ln gives " . `ls -ln "$opt_auth_file"`;
-         print "id gives " . `id`;
-         if (-s $opt_auth_file) {
-            print "File exists and size>0\n";
-         } else {
-            print "File size<=0\n";
-         }
-         if (-r $opt_auth_file) {
-            print "File is readable\n";
-         } else {
-            print "File is not readable\n";
-         }
-         print "Perl says that current Effective Login ID = $> (Real = $<)\n";
-         print "Perl says that current Group ID = $) (Real = $()\n";
+   # build up the extra wmic arguments if defined
+   if ($#opt_extra_wmic_args>=0) {
+      # Each array index should contain a complete argument for wmic eg --option=#client ntlmv2 auth#=Yes
+      # To save difficulty with quoting we translate # into "
+      # So --option=#client ntlmv2 auth#=Yes becomes --option="client ntlmv2 auth"=Yes
+      foreach my $arg (@opt_extra_wmic_args) {
+         $arg=~s/#/"/g;
+         # not sure if this will work when using the wmiclient library
+         push(@wmi_args,$arg);
+         $debug && print "Extra Wmic Arguments specified:$arg\n";
       }
-      finish_program($ERRORS{'UNKNOWN'});
    }
-}
 
-# now add the namespace, hostname and query arguments
-push(@wmi_args,'--namespace',$wmi_namespace);
-push(@wmi_args,"//$the_arguments{'_host'}");
-push(@wmi_args,"$wmi_query");
+   $wmi_query_quote="'";
+   if ($host_os =~ m/win32$/i) {
+      # if running on Windows we need to deal with the ' in the query and change the command line to quote it using \"
+      $wmi_query=~s/\"/\\\"/g;
+      $wmi_query_quote='"';
+   }
+
+   # if user name/password specified they always override the auth file
+   # only check for the username so that this allows an empty password
+   if ($opt_username) {
+      push(@wmi_args,'-U',"${opt_username}%${opt_password}");
+   } elsif ($opt_auth_file) {
+      # quick check on the auth file
+      if (-s -r $opt_auth_file || $opt_ignore_auth_file_warnings) {
+      if ($opt_use_legacy_wmic_client) {
+         # now set up the auth file command line
+         push(@wmi_args,'-U',"${opt_username}%${opt_password}");
+      } else {
+         # we need to actually read the authentication file
+      }
+         push(@wmi_args,'-A',$opt_auth_file);
+      } else {
+         print "The Authentication File \"$opt_auth_file\" either does not exist, can not be accessed or is empty. You need this to allow $wmic_command to authenticate to the Windows machine. See --help for information on the file requirements. You can ignore this warning and proceed, passing the file to wmic by specifying the --IgnoreAuthFileWarnings argument. If the file really does have access problems wmic will not work either and may fail in a not so nice way eg hang on waiting for STDIN.\n";
+         if ($debug) {
+            print "Details for \"$opt_auth_file\" and current User\n";
+            print "ls -ln gives " . `ls -ln "$opt_auth_file"`;
+            print "id gives " . `id`;
+            if (-s $opt_auth_file) {
+               print "File exists and size>0\n";
+            } else {
+               print "File size<=0\n";
+            }
+            if (-r $opt_auth_file) {
+               print "File is readable\n";
+            } else {
+               print "File is not readable\n";
+            }
+            print "Perl says that current Effective Login ID = $> (Real = $<)\n";
+            print "Perl says that current Group ID = $) (Real = $()\n";
+         }
+         finish_program($ERRORS{'UNKNOWN'});
+      }
+   }
+
+   # now add the namespace, hostname and query arguments
+   push(@wmi_args,'--namespace',$wmi_namespace);
+   push(@wmi_args,"//$the_arguments{'_host'}");
+   push(@wmi_args,"$wmi_query");
+
+   # set up the command line
+   # enclose all parameters in the apprpriate host_os based quote character
+   $wmi_commandline = "$wmic_command $wmi_query_quote" . join("$wmi_query_quote $wmi_query_quote",@wmi_args) . $wmi_query_quote;
+
+} else {
+   # CODE FOR WMIC SERVER
+   if ($slash_conversion) {
+      # replace any / in the WMI query \\\\ since \ are difficult to use in linux on the command line
+      # we replace it with \\\\ to pass an actual \\ to the wmic_server
+      # for some reason you need \\ to reach the wmic_server not just a single \
+      # use # as the delimiter for the regex to make it more readable (still need to escape / and \ though)
+      $wmi_query=~s#\/#\\\\\\\\#g;
+   }
+
+   # if there is no username specified and there is an auth file specified then use the auth file
+   # the auth file loads the $opt_username and $opt_password variables
+   if (!$opt_username && $opt_auth_file) {
+      my $auth_file_ok=0;
+      # we need to actually read the authentication file
+      my @auth_file_content=();
+      if (open(AUTH,'<',$opt_auth_file)) {
+         my @auth_file_content=<AUTH>;
+         if ($auth_file_content[0]) {
+            $opt_username=$auth_file_content[0];
+            # just in case the IDFILE is formatted like the legacy wmic client format, try and fix it up
+            $opt_username=~s/username=//;
+            chomp($opt_username);
+            # now assume the auth file is ok
+            $auth_file_ok=1;
+         }
+         if ($auth_file_content[1]) {
+            $opt_password=$auth_file_content[1];
+            # just in case the IDFILE is formatted like the legacy wmic client format, try and fix it up
+            $opt_password=~s/password=//;
+            chomp($opt_password);
+         }
+      }
+
+      if (!$auth_file_ok) {
+         print "There was a problem reading the IDFILE \"$opt_auth_file\". It either does not exist, can not be accessed, has the wrong format or is empty. You need this to allow the wmic_server to authenticate to the Windows machine. See --help for information on the file requirements.\n";
+         if ($debug) {
+            print "Details for \"$opt_auth_file\" and current User\n";
+            print "ls -ln gives " . `ls -ln "$opt_auth_file"`;
+            print "id gives " . `id`;
+            if (-s $opt_auth_file) {
+               print "File exists and size>0\n";
+            } else {
+               print "File size<=0\n";
+            }
+            if (-r $opt_auth_file) {
+               print "File is readable\n";
+            } else {
+               print "File is not readable\n";
+            }
+            print "Perl says that current Effective Login ID = $> (Real = $<)\n";
+            print "Perl says that current Group ID = $) (Real = $()\n";
+         }
+         finish_program($ERRORS{'UNKNOWN'});
+      }
+   }
+
+}
 
 # create wmi command line using the parameters in the array
 my $output='';
-
-# set up the command line
-# enclose all parameters in the apprpriate host_os based quote character
-my $wmi_commandline = "$wmic_command $wmi_query_quote" . join("$wmi_query_quote $wmi_query_quote",@wmi_args) . $wmi_query_quote;
 
 my $all_output=''; # this holds information if any errors are encountered
 
@@ -1649,20 +1770,22 @@ for (my $i=$start_wmi_query_number;$i<$num_samples;$i++) {
    # record the index where we are storing the latest WMI data
    $final_data_array_index=$i;
 
-   if ($debug) {
-      # mask the user name and password in the wmic command, but not if $opt_z is set
-      my $cmd=$wmi_commandline;
-      if ($opt_z ne '') {
-         $cmd=~s/-U$wmi_query_quote $wmi_query_quote(.*?)%(.*?)$wmi_query_quote /-U${wmi_query_quote} ${wmi_query_quote}USER%PASS${wmi_query_quote} /;
+   if ($opt_use_legacy_wmic_client) {
+      if ($debug) {
+         # mask the user name and password in the wmic command, but not if $opt_z is set
+         my $cmd=$wmi_commandline;
+         if ($opt_z ne '') {
+            $cmd=~s/-U$wmi_query_quote $wmi_query_quote(.*?)%(.*?)$wmi_query_quote /-U${wmi_query_quote} ${wmi_query_quote}USER%PASS${wmi_query_quote} /;
+         }
+         print "Round #" . ($i+1) . " of $num_samples\n";
+         if ($use_wmilib && ! $force_wmic_command) {
+            print "Using wmiclient library but displaying command line equivalent\nQUERY:$cmd\n";
+         } else {
+            print "QUERY: $cmd\n";
+         }
       }
-      print "Round #" . ($i+1) . " of $num_samples\n";
-      if ($use_wmilib && ! $force_wmic_command) {
-         print "Using wmiclient library but displaying command line equivalent\nQUERY:$cmd\n";
-      } else {
-         print "QUERY: $cmd\n";
-      }
+      $test_generate && print "wmiccmd=$wmi_commandline\n";
    }
-   $test_generate && print "wmiccmd=$wmi_commandline\n";
 
    my $wmic_cache_file="";
    my $run_wmic=1;
@@ -1726,7 +1849,13 @@ for (my $i=$start_wmi_query_number;$i<$num_samples;$i++) {
       } else {
          # get the wmi data using the command line
          $use_pro_library && starttimer('wmic');
-         $output = `$wmi_commandline 2>&1`;
+         if ($opt_use_legacy_wmic_client) {
+            $output = `$wmi_commandline 2>&1`;
+         } else {
+            # call the wmic_server here
+            $output=call_wmic_server($wmi_query);
+            $debug && print "WMIC_SERVER OUTPUT: $output\n";
+         }
          $use_pro_library && endtimer('wmic');
          $wmic_calls++;
       }
@@ -1744,244 +1873,322 @@ for (my $i=$start_wmi_query_number;$i<$num_samples;$i++) {
    }
 
 #   ########### FOR TESTING ONLY to make it look like there are multiple CPUs from the test machine
-   if ($output=~/DeviceID.Name.NumberOfCores/) {
-      $output=$output . "CPU1|Intel(R) Core(TM) i5-6500 CPU @ 3.20GHz|2\n";
-   }
+#   if ($output=~/DeviceID.Name.NumberOfCores/) {
+#      $output=$output . "CPU1|Intel(R) Core(TM) i5-6500 CPU @ 3.20GHz|2\n";
+#   }
 
    $all_output.=$output;
    $debug && print "OUTPUT: $output\n";
    $test_generate && print "wmicoutput_${test_number}_${global_wmic_call_counter}=<<EOT\n${output}\nEOT\n";
 
-   # now we have to verify and parse the returned query
-   # a valid return query comes back in the following format
-   # CLASS: <WMICLASSNAME>
-   # <FIELDNAMES separated by |>
-   # <Row 1 DATA VALUES separated by |>
-   # <Row 2 DATA VALUES separated by |>
-   # <Row n DATA VALUES separated by |>
-   #
-   # Sometimes queries only return a single data row
 
-   # could be something like this:
-   # CLASS: Win32_PerfRawData_PerfOS_Processor
-   # Name|PercentProcessorTime|Timestamp_Sys100NS
-   # _Total|2530739524720|129476821059431200
+   if ($opt_use_legacy_wmic_client) {
+      # now we have to verify and parse the returned query
+      # a valid return query comes back in the following format
+      # CLASS: <WMICLASSNAME>
+      # <FIELDNAMES separated by |>
+      # <Row 1 DATA VALUES separated by |>
+      # <Row 2 DATA VALUES separated by |>
+      # <Row n DATA VALUES separated by |>
+      #
+      # Sometimes queries only return a single data row
 
-   # There are 3 typical types of outputs:
-   # 1) the query works fine and returns data - this looks like above
-   # 2) the query worked but found no data eg you are looking for specific process names then $output will be empty
-   # 3) an error occurred - the error message is returned
+      # could be something like this:
+      # CLASS: Win32_PerfRawData_PerfOS_Processor
+      # Name|PercentProcessorTime|Timestamp_Sys100NS
+      # _Total|2530739524720|129476821059431200
 
-   if ($output eq '') {
-      # the query probably worked but just returned no data
-      # lets set some variables
-      $$results[0][0]{'_ChecksOK'}++;
-      $$results[$i][0]{'_ItemCount'}=0;
-   } else {
-      # now we have 2 possibilities left
-      # 1) good results formatted nicely
-      # 2) errors
+      # There are 3 typical types of outputs:
+      # 1) the query works fine and returns data - this looks like above
+      # 2) the query worked but found no data eg you are looking for specific process names then $output will be empty
+      # 3) an error occurred - the error message is returned
 
-      my $class_row_content='';
-      if ($output=~/(CLASS: \w+)\n/sg) {
-         # looks like we have some results
-         # sometimes the CLASS line repeats, so we store it for later
-         $class_row_content=$1;
-         $debug && print "Storing Class Row:$class_row_content\n";
+      if ($output eq '') {
+         # the query probably worked but just returned no data
+         # lets set some variables
+         $$results[0][0]{'_ChecksOK'}++;
+         $$results[$i][0]{'_ItemCount'}=0;
+      } else {
+         # now we have 2 possibilities left
+         # 1) good results formatted nicely
+         # 2) errors
 
-         # now, if $column_name_regex is specified then we have to use the regex to look for the column names
-         # else we just look for the next line and split it on |
-         my $got_header=0;
-         my $last_header_field_number=-1;
-         my $header_row_content='';
-         my @column_names=();
-         # doing this check each time helps validate the results
-         if ($column_name_regex) {
-            if ($output=~/$column_name_regex/sg) {
-               $got_header=1;
-               my $j=0;
-               # I'd really like to use a perl 5.10 construct here (Named Capture buffers ie the hash $+) to make it much nicer code but have decided to do it an ugly way to accomodate older versions
-               # so now we have to go through $1, $2 one at a time in a hardcoded fashion (is there a better way to do this?)
-               # this places a hard limit on the number of fields we can find in our regex
-               # of course this is only a problem if you need to specify a specific regex to find your field data in the WMI results
-               #------------------------------------------------------
-               # add more hardcoding here as needed - yuk - at some point we will use %+ - when enough people are on perl 5.10 or more
-               # this is the first of 2 places you need to change this hardcoding
-               # hopefully putting these to zero if they do not have any value will be ok, need a way to tell if $1 is '' or 0 really
-               @hardcoded_field_list=( $1||0,$2||0,$3||0,$4||0,$5||0,$6||0,$7||0,$8||0,$9||0 );
-               #------------------------------------------------------
-               $debug && print "COLUMNS:";
-               foreach my $regex_field (@hardcoded_field_list) {
-                  $debug && print "$regex_field, ";
-                  if ($regex_field ne '') {
-                     $column_names[$j]=$regex_field;
-                  }
-                  $j++;
-               }
-               $last_header_field_number=$j-1;
-               $debug && print " (last index=$last_header_field_number cols)\n";
-               # increment the ok counter
-               $$results[0][0]{'_ChecksOK'}++;
-            }
-         } else {
-            # we just do a regex that grabs the next line of output
-            if ($output=~/(.*?)\n/sg) {
-               $got_header=1;
-               $header_row_content=$1;
-               $debug && print "Storing Header Row:$header_row_content\n";
+         my $class_row_content='';
+         if ($output=~/(CLASS: \w+)\n/sg) {
+            # looks like we have some results
+            # sometimes the CLASS line repeats, so we store it for later
+            $class_row_content=$1;
+            $debug && print "Storing Class Row:$class_row_content\n";
 
-               # we just use split to break out the column titles
-               @column_names=split(/$wmic_split_delimiter/,$1);
-               $last_header_field_number=$#column_names;
-               $debug && print "COLUMNS(last index=$last_header_field_number):$1\n";
-               $$results[0][0]{'_ChecksOK'}++;
-            }
-         }
-
-         if ($got_header) {
-            # since we have the header titles we can now look for the data
-            # just like the column titles the user might have specified a regex to find the fields
-            # we do this because sometimes there are queries the return a different number of fields in the titles to the data
-            # eg the page file query - 3 fields in the title and 5 fields in the data!
-            #CLASS: Win32_OperatingSystem
-            #FreePhysicalMemory|Name|TotalVisibleMemorySize
-            #515204|Microsoft Windows XP Professional|C:\WINDOWS|\Device\Harddisk0\Partition1|1228272
-            my $use_split=1;
-            my $field_finding_regex='(.*?)\n'; # this is the default
-            my %keep_certain_fields=();
-            if ($value_regex) {
-               # $value_regex has 2 possibilities
-               # 1) a comma delimited list of data field numbers to be kept eg 1,2,4
-               # 2) a regular express to find the fields (still needed if the data contains \n)
-               if ($value_regex=~/([\d,]+)/) {
-                  # we will just use this regex to break up the fields
-                  # FORMAT: NUM:FIELDLIST where FIELDLIST is a comma delimited list of field numbers we want to retrieve
-                  # load up the hash that tells us which fields to keep
-                  foreach my $field (split(',',$value_regex)) {
-                     $keep_certain_fields{$field}=1;
-                  }
-                  # adjust the number of
-                  $debug && print "KEEP ONLY THESE FIELDS=$value_regex\n";
-               } else {
-                  # we assume that this is a regex
-                  $field_finding_regex=$value_regex;
-                  $use_split=0; # do not use the split
-                  $debug && print "Using Custom Regex to find FIELDS\n";
-               }
-            }
-
-            # now loop through the returned records
-            $debug && print "Now looking for $field_finding_regex (use_split=$use_split)\n";
-            my $found=0;
-            my @field_data;
-            while ($output=~/$field_finding_regex/sg) {
-               # now we have matched a result row, so break it up into fields
-               my $row_data_valid=1;
-               my $row_data=$1; # this is the entire string matched (only works if $use_split=1)
-               # use of $& slows down all program regexes - only turn this on if needed
-               $debug && print "\nLooking at Data Row: $&";
-               if ($use_split) {
-                  @field_data=split(/$wmic_split_delimiter/,$row_data);
-
-                  # check that the row data looks valid
-                  # to be valid
-                  # 1) the row should have the same number of fields (it can be up to only 1 field less) as the header row (there have been reports that the CLASS: line and/or the header line repeats throughout the content
-                  # 2) the row should not be the same as the header row (there have been reports that the header row sometimes repeats throughout the content)
-                  # If we are using $value_regex to find the fields then all that goes out the window and we have to assume it is ok
-                  # we allow it to be up to one field less because in some cases if the row data is like
-                  # 1|2|3| and the 4th field is empty, the split actually only returns an array with 3 elements instead of 4
-                  # checkdrivesize with drives that do not have volume names have this problem
-                  # so to fix this the field count should be the same as the header row or only one less
-                  if ( ($last_header_field_number-$#field_data<=1 && $row_data ne $header_row_content && $row_data ne $class_row_content) || $value_regex) {
-                     my $header_field_number=0;
-                     my $data_field_number=1; # these ones start from 1 since it makes it easier for the user to define - take care
-                     $debug && print "FIELDS (via Split):";
-                     foreach my $field (@field_data) {
-                        my $use_field=1;
-                        if ($value_regex && ! exists($keep_certain_fields{$data_field_number})) {
-                           $debug && print "Drop Field #$data_field_number=$field\n";
-                           $use_field=0;
-                        }
-                        if ($use_field) {
-                           $debug && print "COLNAME=$column_names[$header_field_number],FIELD=$field\n";
-                           # If you got the regex wrong or some fields come back with | in them you will get
-                           # "Use of uninitialized value within @column_names in hash element" error when using $column_names[$header_field_number]
-                           # hence use $column_names[$header_field_number]||''
-
-                           if ($the_arguments{'_convertslash'}) {
-                              # convert \ to /
-                              $field=~s/\\/\//g;
-                           }
-
-                           $$results[$i][$found]{$column_names[$header_field_number]||''}=$field;
-                           # only increment the header field number when we use it
-                           $header_field_number++;
-                        }
-                        # always increment the data field number
-                        $data_field_number++;
-                     }
-                  } else {
-                     $row_data_valid=0;
-                     $debug && print "Row data is not valid\n";
-                  }
-               } else {
+            # now, if $column_name_regex is specified then we have to use the regex to look for the column names
+            # else we just look for the next line and split it on |
+            my $got_header=0;
+            my $last_header_field_number=-1;
+            my $header_row_content='';
+            my @column_names=();
+            # doing this check each time helps validate the results
+            if ($column_name_regex) {
+               if ($output=~/$column_name_regex/sg) {
+                  $got_header=1;
                   my $j=0;
+                  # I'd really like to use a perl 5.10 construct here (Named Capture buffers ie the hash $+) to make it much nicer code but have decided to do it an ugly way to accomodate older versions
+                  # so now we have to go through $1, $2 one at a time in a hardcoded fashion (is there a better way to do this?)
+                  # this places a hard limit on the number of fields we can find in our regex
+                  # of course this is only a problem if you need to specify a specific regex to find your field data in the WMI results
                   #------------------------------------------------------
                   # add more hardcoding here as needed - yuk - at some point we will use %+ - when enough people are on perl 5.10 or more
-                  # this is the second of 2 places you need to change this hardcoding
+                  # this is the first of 2 places you need to change this hardcoding
                   # hopefully putting these to zero if they do not have any value will be ok, need a way to tell if $1 is '' or 0 really
                   @hardcoded_field_list=( $1||0,$2||0,$3||0,$4||0,$5||0,$6||0,$7||0,$8||0,$9||0 );
                   #------------------------------------------------------
-                  $debug && print "FIELDS (via Hardcoding):";
+                  $debug && print "COLUMNS:";
                   foreach my $regex_field (@hardcoded_field_list) {
                      $debug && print "$regex_field, ";
                      if ($regex_field ne '') {
-                        # If you got the regex wrong or some fields come back with | in them you will get
-                        # "Use of uninitialized value within @column_names in hash element" error when using $column_names[$j]
-                        # hence use $column_names[$j]||''
-                        $$results[$i][$found]{$column_names[$j]||''}=$regex_field;
+                        $column_names[$j]=$regex_field;
                      }
                      $j++;
                   }
+                  $last_header_field_number=$j-1;
+                  $debug && print " (last index=$last_header_field_number cols)\n";
+                  # increment the ok counter
+                  $$results[0][0]{'_ChecksOK'}++;
                }
+            } else {
+               # we just do a regex that grabs the next line of output
+               if ($output=~/(.*?)\n/sg) {
+                  $got_header=1;
+                  $header_row_content=$1;
+                  $debug && print "Storing Header Row:$header_row_content\n";
 
-               # only process and count as found if the row data is valid
-               $debug && print "Row Data Valid = $row_data_valid\n";
-               if ($row_data_valid) {
-                  $debug && print "\n";
-                  $debug && print "Row Data Found OK\n";
-                  # provide Sums if the parameter is defined
-                  foreach my $field_name (@{$provide_sums}) {
-                     # we have to sum up all the fields named $field_name
-                     # we can assume that they are numbers
-                     # and we also assume that they are valid for this WMI query! ie that the programmer got it right!
-                     # this first sum, sums up all the $field_name across all the queries for the Row Number $i
-                     $debug && print "Summing for FIELD:\"$field_name\"\n";
-                     $$results[0][$found]{"_QuerySum_$field_name"}+=$$results[$i][$found]{$field_name};
-                     # this sum, sums up all the $field_names (columns) within a single query - ie where multiple rows are returned
-                     $$results[$i][0]{"_ColSum_$field_name"}+=$$results[$i][$found]{$field_name};
+                  # we just use split to break out the column titles
+                  @column_names=split(/$wmic_split_delimiter/,$1);
+                  $last_header_field_number=$#column_names;
+                  $debug && print "COLUMNS(last index=$last_header_field_number):$1\n";
+                  $$results[0][0]{'_ChecksOK'}++;
+               }
+            }
+
+            if ($got_header) {
+               # since we have the header titles we can now look for the data
+               # just like the column titles the user might have specified a regex to find the fields
+               # we do this because sometimes there are queries the return a different number of fields in the titles to the data
+               # eg the page file query - 3 fields in the title and 5 fields in the data!
+               #CLASS: Win32_OperatingSystem
+               #FreePhysicalMemory|Name|TotalVisibleMemorySize
+               #515204|Microsoft Windows XP Professional|C:\WINDOWS|\Device\Harddisk0\Partition1|1228272
+               my $use_split=1;
+               my $field_finding_regex='(.*?)\n'; # this is the default
+               my %keep_certain_fields=();
+               if ($value_regex) {
+                  # $value_regex has 2 possibilities
+                  # 1) a comma delimited list of data field numbers to be kept eg 1,2,4
+                  # 2) a regular express to find the fields (still needed if the data contains \n)
+                  if ($value_regex=~/([\d,]+)/) {
+                     # we will just use this regex to break up the fields
+                     # FORMAT: NUM:FIELDLIST where FIELDLIST is a comma delimited list of field numbers we want to retrieve
+                     # load up the hash that tells us which fields to keep
+                     foreach my $field (split(',',$value_regex)) {
+                        $keep_certain_fields{$field}=1;
+                     }
+                     # adjust the number of
+                     $debug && print "KEEP ONLY THESE FIELDS=$value_regex\n";
+                  } else {
+                     # we assume that this is a regex
+                     $field_finding_regex=$value_regex;
+                     $use_split=0; # do not use the split
+                     $debug && print "Using Custom Regex to find FIELDS\n";
                   }
-                  # apply static variable substituions if any on the values (this is a reverse substitute to turn a value into a name)
-                  # we do it here so that it looks like the WMI query is returning the substituted values and the plugin is then operating on substituted values
-                  $use_pro_library && scalar keys %ini_static_variables && substitute_static_variables_hash(1,$$results[$i][$found],'raw wmi data');
-
-                  # increment the results counter for this query
-                  $found++;
-               } else {
-                  $debug && print "Probably an invalid row. Valid row test is $last_header_field_number-$#field_data<=1 && $row_data ne $header_row_content && $row_data ne $class_row_content\n";
                }
+
+               # now loop through the returned records
+               $debug && print "Now looking for $field_finding_regex (use_split=$use_split)\n";
+               my $found=0;
+               my @field_data;
+               while ($output=~/$field_finding_regex/sg) {
+                  # now we have matched a result row, so break it up into fields
+                  my $row_data_valid=1;
+                  my $row_data=$1; # this is the entire string matched (only works if $use_split=1)
+                  # use of $& slows down all program regexes - only turn this on if needed
+                  $debug && print "\nLooking at Data Row: $&";
+                  if ($use_split) {
+                     @field_data=split(/$wmic_split_delimiter/,$row_data);
+
+                     # check that the row data looks valid
+                     # to be valid
+                     # 1) the row should have the same number of fields (it can be up to only 1 field less) as the header row (there have been reports that the CLASS: line and/or the header line repeats throughout the content
+                     # 2) the row should not be the same as the header row (there have been reports that the header row sometimes repeats throughout the content)
+                     # If we are using $value_regex to find the fields then all that goes out the window and we have to assume it is ok
+                     # we allow it to be up to one field less because in some cases if the row data is like
+                     # 1|2|3| and the 4th field is empty, the split actually only returns an array with 3 elements instead of 4
+                     # checkdrivesize with drives that do not have volume names have this problem
+                     # so to fix this the field count should be the same as the header row or only one less
+                     if ( ($last_header_field_number-$#field_data<=1 && $row_data ne $header_row_content && $row_data ne $class_row_content) || $value_regex) {
+                        my $header_field_number=0;
+                        my $data_field_number=1; # these ones start from 1 since it makes it easier for the user to define - take care
+                        $debug && print "FIELDS (via Split):";
+                        foreach my $field (@field_data) {
+                           my $use_field=1;
+                           if ($value_regex && ! exists($keep_certain_fields{$data_field_number})) {
+                              $debug && print "Drop Field #$data_field_number=$field\n";
+                              $use_field=0;
+                           }
+                           if ($use_field) {
+                              $debug && print "COLNAME=$column_names[$header_field_number],FIELD=$field\n";
+                              # If you got the regex wrong or some fields come back with | in them you will get
+                              # "Use of uninitialized value within @column_names in hash element" error when using $column_names[$header_field_number]
+                              # hence use $column_names[$header_field_number]||''
+
+                              if ($the_arguments{'_convertslash'}) {
+                                 # convert \ to /
+                                 $field=~s/\\/\//g;
+                              }
+
+                              $$results[$i][$found]{$column_names[$header_field_number]||''}=$field;
+                              # only increment the header field number when we use it
+                              $header_field_number++;
+                           }
+                           # always increment the data field number
+                           $data_field_number++;
+                        }
+                     } else {
+                        $row_data_valid=0;
+                        $debug && print "Row data is not valid\n";
+                     }
+                  } else {
+                     my $j=0;
+                     #------------------------------------------------------
+                     # add more hardcoding here as needed - yuk - at some point we will use %+ - when enough people are on perl 5.10 or more
+                     # this is the second of 2 places you need to change this hardcoding
+                     # hopefully putting these to zero if they do not have any value will be ok, need a way to tell if $1 is '' or 0 really
+                     @hardcoded_field_list=( $1||0,$2||0,$3||0,$4||0,$5||0,$6||0,$7||0,$8||0,$9||0 );
+                     #------------------------------------------------------
+                     $debug && print "FIELDS (via Hardcoding):";
+                     foreach my $regex_field (@hardcoded_field_list) {
+                        $debug && print "$regex_field, ";
+                        if ($regex_field ne '') {
+                           # If you got the regex wrong or some fields come back with | in them you will get
+                           # "Use of uninitialized value within @column_names in hash element" error when using $column_names[$j]
+                           # hence use $column_names[$j]||''
+                           $$results[$i][$found]{$column_names[$j]||''}=$regex_field;
+                        }
+                        $j++;
+                     }
+                  }
+
+                  # only process and count as found if the row data is valid
+                  $debug && print "Row Data Valid = $row_data_valid\n";
+                  if ($row_data_valid) {
+                     $debug && print "\n";
+                     $debug && print "Row Data Found OK\n";
+                     # provide Sums if the parameter is defined
+                     foreach my $field_name (@{$provide_sums}) {
+                        # we have to sum up all the fields named $field_name
+                        # we can assume that they are numbers
+                        # and we also assume that they are valid for this WMI query! ie that the programmer got it right!
+                        # this first sum, sums up all the $field_name across all the queries for the Row Number $i
+                        $debug && print "Summing for FIELD:\"$field_name\"\n";
+                        $$results[0][$found]{"_QuerySum_$field_name"}+=$$results[$i][$found]{$field_name};
+                        # this sum, sums up all the $field_names (columns) within a single query - ie where multiple rows are returned
+                        $$results[$i][0]{"_ColSum_$field_name"}+=$$results[$i][$found]{$field_name};
+                     }
+                     # apply static variable substituions if any on the values (this is a reverse substitute to turn a value into a name)
+                     # we do it here so that it looks like the WMI query is returning the substituted values and the plugin is then operating on substituted values
+                     $use_pro_library && scalar keys %ini_static_variables && substitute_static_variables_hash(1,$$results[$i][$found],'raw wmi data');
+
+                     # increment the results counter for this query
+                     $found++;
+                  } else {
+                     $debug && print "Probably an invalid row. Valid row test is $last_header_field_number-$#field_data<=1 && $row_data ne $header_row_content && $row_data ne $class_row_content\n";
+                  }
+               }
+               # record the number of rows found for this query
+               $$results[$i][0]{'_ItemCount'}=$found;
+            } else {
+               $debug && print "Could not find the column title line\n";
+               $failure++;
+            }
+
+         } else {
+            $debug && print "Could not find the CLASS: line - an error occurred\n";
+            $failure++;
+         }
+      }
+   } else {
+      # we should have a json response from the wmic_server
+
+      # There are 3 typical types of outputs:
+      # 1) the query works fine and returns data - this is json
+      # 2) the query worked but found no data eg this is json also
+      # 3) an error occurred - the error message is returned and no json
+
+      if ($output eq '') {
+         # the query probably worked but just returned no data
+         # lets set some variables
+         $debug && print "Blank output\n";
+         $$results[0][0]{'_ChecksOK'}++;
+         $$results[$i][0]{'_ItemCount'}=0;
+      } else {
+         # now we have 2 possibilities left
+         # 1) good results formatted nicely in JSON
+         # 2) errors
+
+         # let's try and read JSON
+         my $json_output='';
+
+         eval {
+            $json_output=decode_json($output);
+            $debug && print "JSON OUTPUT:" . Dumper($json_output);
+         };
+         if ($@) {
+            # there was a problem with the json decode
+            # it probably is not json and is just an error message
+            $debug && print "JSON decode error: $@\n";
+            $failure++;
+         } elsif ($json_output) {
+            # this should now be valid JSON output
+            # now loop through the returned records
+            my $found=0;
+            my @field_data;
+            # for JSON, we just assume that if we get JSON data, that the checks are ok
+            $$results[0][0]{'_ChecksOK'}++;
+            # loop through the json data which is in an array
+            foreach my $row (@{$json_output}) {
+               # each json row is a hash of wmi field names and values
+               # print "JSON ROW:" . Dumper($row);
+
+               # stick the json row data into the $results variable
+               $$results[$i][$found]=$row;
+
+               # provide Sums if the parameter is defined
+               foreach my $field_name (@{$provide_sums}) {
+                  # we have to sum up all the fields named $field_name
+                  # we can assume that they are numbers
+                  # and we also assume that they are valid for this WMI query! ie that the programmer got it right!
+                  # this first sum, sums up all the $field_name across all the queries for the Row Number $i
+                  $debug && print "Summing for FIELD:\"$field_name\"\n";
+                  $$results[0][$found]{"_QuerySum_$field_name"}+=$$results[$i][$found]{$field_name};
+                  # this sum, sums up all the $field_names (columns) within a single query - ie where multiple rows are returned
+                  $$results[$i][0]{"_ColSum_$field_name"}+=$$results[$i][$found]{$field_name};
+               }
+
+               # apply static variable substituions if any on the values (this is a reverse substitute to turn a value into a name)
+               # we do it here so that it looks like the WMI query is returning the substituted values and the plugin is then operating on substituted values
+               $use_pro_library && scalar keys %ini_static_variables && substitute_static_variables_hash(1,$$results[$i][$found],'raw wmi data');
+
+               # increment the results counter for this query
+               $found++;
             }
             # record the number of rows found for this query
             $$results[$i][0]{'_ItemCount'}=$found;
+
          } else {
-            $debug && print "Could not find the column title line\n";
-            $failure++;
+            # may need more error handling on this case
+            $debug && print "Empty JSON output\n";
          }
 
-      } else {
-         $debug && print "Could not find the CLASS: line - an error occurred\n";
-         $failure++;
       }
+
    }
 
    if ($i+1!=$num_samples) {
@@ -3158,7 +3365,7 @@ my ($data_errors)=@_;
 if ($data_errors) {
    $plugin_output.="UNKNOWN - ";
    if ($data_errors=~/Permission denied/i) {
-      $plugin_output.="Permission denied when trying to store the state data. Sometimes this happens if you have been testing the plugin from the command line as a different user to the Nagios process user. You will need to change the permissions on the file or remove it. ";
+      $plugin_output.="Permission denied when trying to store the state data. Sometimes this happens if you have been testing the plugin from the command line as a different user to the Nagios process user. You will need to change the permissions on the file or remove it. Another option is to look at using the --keepid command line option. ";
    } else {
       $plugin_output.="There was an error while trying to store the state data. ";
    }
@@ -3175,6 +3382,8 @@ my ($data_errors,$not_fatal)=@_;
 my $temp_plugin_output='';
 if ($data_errors) {
    $temp_plugin_output.="UNKNOWN - The WMI query had problems.";
+
+   # -------- errors from legacy wmic client
    if ($data_errors=~/NT_STATUS_ACCESS_DENIED/i) {
       my $extra_msg='';
       if ($opt_auth_file) {
@@ -3208,8 +3417,26 @@ if ($data_errors) {
       $temp_plugin_output.=" The target host ($the_arguments{_host}) did not allow our network connection. It is a valid name/IP Address. A firewall might be blocking us. There might be some critical services not running. Is it even running Windows?  Wmic error text on the next line.\n";
    } elsif ($data_errors=~/^.{0,5}TIMEOUT.{0,5}$/i) {
       $temp_plugin_output.=" The WMI Client Library timed out. There are multiple possible reasons for this, some of them include - The host $the_arguments{_host} might just be really busy, it might not even be running Windows. Error text on the next line.\n";
+
+   # -------- errors from wmic server
+   } elsif ($data_errors=~/400 BAD REQUEST/i) {
+      $temp_plugin_output.=" Something is probably wrong with the format of the request that was sent to the wmic_server ($wmic_server_uri). One possibility is that the IDFILE is incorrectly formatted.\n";
+   } elsif ($data_errors=~/500 INTERNAL SERVER ERROR/i) {
+      $temp_plugin_output.=" Something is probably wrong with the wmic_server ($wmic_server_uri)\n";
+   } elsif ($data_errors=~/500.*Connection refused/i) {
+      $temp_plugin_output.=" The wmic_server refused our connection. Check that the wmic_server URI ($wmic_server_uri) is correct and also check the status of wmic_server\n";
+   } elsif ($data_errors=~/Name or service not known/i) {
+      $temp_plugin_output.=" The target host ($the_arguments{_host}) might not be reachable over the network. Is it down? Is $the_arguments{_host} the correct hostname?. The host might even be up but just too busy. Wmic error text on the next line.\n";
+   } elsif ($data_errors=~/Connect call failed/i) {
+      $temp_plugin_output.=" The target host ($the_arguments{_host}) did not allow our network connection. It is a valid name/IP Address. A firewall might be blocking us. There might be some critical services not running. Is it even running Windows?  Wmic error text on the next line.\n";
+   } elsif ($data_errors=~/Problem with connection to target host/i) {
+      $temp_plugin_output.=" The target host ($the_arguments{_host}) might not be reachable over the network for WMI calls. A firewall might be blocking us. Wmic error text on the next line.\n";
+   } elsif ($data_errors=~/Problem with the wmi query on the target host/i) {
+      $temp_plugin_output.=" We're not exactly sure what this error is. There was some kind of problem performing the WMI query on the target host ($the_arguments{_host}). Wmic error text on the next line.\n";
+
+   # -------- default error catch
    } else {
-      $temp_plugin_output.=" The error text from wmic is: ";
+      $temp_plugin_output.=" The wmic error text is: ";
    }
    $temp_plugin_output.=$data_errors;
    if ($not_fatal) {
@@ -4822,12 +5049,19 @@ foreach my $row (@{$collected_data[$last_wmi_data_index]}) {
          }
 
          if ($process_this_row) {
-            $debug && print "Including the following service: " . Dumper($row) . "\n";
+            $debug && print "Including the following service (Started=$$row{'Started'}): " . Dumper($row) . "\n";
             my $status_display_info='';
             if (lc($$row{'Status'}) ne 'ok') {
                $status_display_info=" ($$row{'Status'})";
             }
-            if ($$row{'Started'} eq 'True' && $$row{'State'} eq 'Running' && $$row{'Status'} eq 'OK') {
+            if ($opt_use_legacy_wmic_client && $$row{'Started'} eq 'True' && $$row{'State'} eq 'Running' && $$row{'Status'} eq 'OK') {
+               $num_ok++;
+               if (!$auto_mode) {
+                  # if we have using the regex mode then list out the services we find
+                  $result_text{'ok'}.=    "'$$row{'DisplayName'}' ($$row{'Name'}) is $$row{'State'}$status_display_info, ";
+                  $result_text{'all'}.="'$$row{'DisplayName'}' ($$row{'Name'}) is $$row{'State'}$status_display_info, ";
+               }
+            } elsif (!$opt_use_legacy_wmic_client && $$row{'Started'} && $$row{'State'} eq 'Running' && $$row{'Status'} eq 'OK') {
                $num_ok++;
                if (!$auto_mode) {
                   # if we have using the regex mode then list out the services we find
@@ -6562,25 +6796,31 @@ return $string;
 }
 #-------------------------------------------------------------------------
 sub convert_WMI_timestamp_to_seconds {
-# pass in a WMI Timestamp like 20100528105127.000000+600
+# pass in a WMI Timestamp like 20120324202846.927920+660 (legacy wmic client)
+# pass in a WMI Timestamp like 2012-03-24 09:28:46.927920+600 (wmic_server)
 my ($wmi_timestamp)=@_;
 my $sec='';
 my $age_sec='';
 my $current_dt='';
 my $current_sec='';
-$debug && print "Converting WMI Timestamp $wmi_timestamp to seconds = ";
+$debug && print "Converting WMI Timestamp $wmi_timestamp to seconds\n";
 my $tz='';
 my $timezone_direction='+';
 my $timezone_offset=0;
-#                        1      2      3      4      5      6      7     8        9
-if ($wmi_timestamp=~/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2}).(\d*)([+\-])+(.{3,3})$/) {
+
+# typically from wmic client
+#                         1      2      3      4      5      6      7     8        9
+if ($wmi_timestamp=~/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2}).(\d*)([+\-])+(.{3,3})$/ ||
+
+    # typically from wmic server
+    #                     1       2       3       4       5       6      7     8        9
+    $wmi_timestamp=~/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2}):*(\d*)([+\-])*(.{0,3})$/ ) {
    # now convert that fileage to seconds
    # firstly look at the time zone offset value
-   # as per https://docs.microsoft.com/en-us/windows/win32/wmisdk/cim-datetime
+   # as per https://docs.microsoft.com/en-us/windows/win32/wmisdk/cim-datetime (this is for legacy wmi client)
    # it would normally be a 3 digit number which is a number of minutes
    # however it can also be *** which means that there is no time zone and the local time zone (of the windows box) should be used
    # best we can do at this point is use the time zone of the system that this script is running on instead until we find something better
-   $tz=$8 . sprintf("%02d%02d",$9/60,$9%60);
    my %ts_info=(
       year       => $1,
       month      => $2,
@@ -6588,11 +6828,13 @@ if ($wmi_timestamp=~/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2}).(\d*)([+\-])+(.
       hour       => $4,
       minute     => $5,
       second     => $6,
-      nanosecond => $7,
+      nanosecond => $7 || 0,
       time_zone  => '', # set later
    );
-   $timezone_direction=$8;
-   $timezone_offset=$9;
+   $timezone_direction=$8 || "+";
+   $timezone_offset=$9 || "000";
+
+   $tz=$timezone_direction . sprintf("%02d%02d",$timezone_offset/60,$timezone_offset%60);
 
    # now check the timezone offset
    if ($timezone_offset=~/\d{3,3}/) {
@@ -6604,6 +6846,8 @@ if ($wmi_timestamp=~/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2}).(\d*)([+\-])+(.
       $ts_info{'time_zone'}='local';
    }
 
+   $debug && print "Extracted time info:" . Dumper(\%ts_info);
+
    my $dt = DateTime->new(%ts_info);
 
    $sec=$dt->epoch();
@@ -6612,7 +6856,7 @@ if ($wmi_timestamp=~/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2}).(\d*)([+\-])+(.
    $current_sec=$current_dt->epoch();
    $age_sec=$current_sec-$sec;
 }
-$debug && print "$sec. Now=$current_dt ($current_sec sec). Age=$age_sec sec. TZ converted from $timezone_direction$timezone_offset (sec) to $tz (HHMM)\n";
+$debug && print "Converted to $sec. Now=$current_dt ($current_sec sec). Age=$age_sec sec. TZ converted from $timezone_direction$timezone_offset (sec) to $tz (HHMM)\n";
 return $sec,$age_sec;
 }
 #-------------------------------------------------------------------------

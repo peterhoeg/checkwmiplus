@@ -1,4 +1,4 @@
-check_wmi_plus v1.66
+check_wmi_plus v1.67
 For installation details and more downloads see http://www.edcint.co.nz/checkwmiplus
 The --help output follows -
 
@@ -11,7 +11,7 @@ BRIEF
 
  Complete Usage:
 
- check_wmi_plus.pl -H HOSTNAME -u DOMAIN/USER -p PASSWORD -m MODE [-s SUBMODE] [-b BYTEFACTOR] [-w WARN] [-c CRIT] [-a ARG1 ] [-o ARG2] [-3 ARG3] [-4 ARG4] [-5 ARG5] [-A AUTHFILE] [-t TIMEOUT] [-y DELAY] [--namespace WMINAMESPACE] [--extrawmicarg EXTRAWMICARG] [--nodatamode] [--nodataexit NODATAEXIT] [--nodatastring NODATASTRING] [-d] [-z] [--inifile=INIFILE] [--inidir=INIDIR] [--inihelp] [--nokeepstate] [--keepexpiry EXPIRY] [--keepid KID] [--joinexpiry EXPIRY] [--helperexpiry EXPIRY] [-v OSVERSION] [--help] [--itexthelp] [--forcewmiccommand] [-icollectusage] [--ishowusage] [--logswitch] [--logkeep] [--logsuffix SUFFIX] [--logshow] [--variablesdisabled] [--forceiniopen] [--forcetruncateoutput LEN] [--Mapexit MAPSPEC] [--fieldshow] [--filterinirowsbystatus FILTERSTATUS] [--Convertslash] [--forceVariablesCriteriaSpec] [--iRequireAllCriticals] [--iRequireAllWarnings]
+ check_wmi_plus.pl -H HOSTNAME -u DOMAIN/USER -p PASSWORD -m MODE [-s SUBMODE] [-b BYTEFACTOR] [-w WARN] [-c CRIT] [-a ARG1 ] [-o ARG2] [-3 ARG3] [-4 ARG4] [-5 ARG5] [-A AUTHFILE] [-t TIMEOUT] [-y DELAY] [--namespace WMINAMESPACE] [--extrawmicarg EXTRAWMICARG] [--nodatamode] [--nodataexit NODATAEXIT] [--nodatastring NODATASTRING] [-d] [-z] [--inifile=INIFILE] [--inidir=INIDIR] [--inihelp] [--nokeepstate] [--keepexpiry EXPIRY] [--keepid KID] [--joinexpiry EXPIRY] [--helperexpiry EXPIRY] [-v OSVERSION] [--help] [--itexthelp] [--forcewmiccommand] [-icollectusage] [--ishowusage] [--logswitch] [--logkeep] [--logsuffix SUFFIX] [--logshow] [--variablesdisabled] [--forceiniopen] [--forcetruncateoutput LEN] [--Mapexit MAPSPEC] [--fieldshow] [--filterinirowsbystatus FILTERSTATUS] [--Convertslash] [--forceVariablesCriteriaSpec] [--iRequireAllCriticals] [--iRequireAllWarnings] [--legacywmicclient]
 
  Help as a Manpage:
 
@@ -31,9 +31,30 @@ DESCRIPTION
  For more information see the website www.edcint.co.nz/checkwmiplus
 
 REQUIRED OPTIONS
- -H HOSTNAME  specify the name or IP Address of the host that you want to check
 
-You must specifiy a username/password/domain in one of two ways. The use of -u DOMAIN/USER -p PASSWORD always overrides the values contained in -A AUTHFILE
+ -H HOSTNAME  specify the name or IP Address of the host that you want to CHECK
+
+ -m MODE  the check mode. The list of valid MODEs and a description is shown below
+
+REQUIRED OPTIONS FOR WMIC Server
+ These only apply if using the new WMIC Server
+ You must specify username/password/domain (referred to as auth info) in the WMIC Server configuration. Check WMI PLus does not hold auth info. It only points to the auth info in the WMIC Server.
+ You must point to the auth info using an identifier that matches one in the WMIC Server configuration.
+ -u ID  specify the identifier for the auth info that matches the one defined in the WMIC Server
+
+ -p TOKEN  specific the token required to authenticate to the WMIC Server. This is not Windows authentication information. The tokens are defined in the WMIC Server configuration
+
+ -A IDFILE  the full path to an ID file. The file is read by Check WMI PLus. You can override the settings in this file by using -u ID -p TOKEN. The IDFILE should contain only two lines as follows:
+
+      <ID>
+      <TOKEN>
+
+ where <ID> matches the ID required by the WMIC Server and <TOKEN> (optional) matches the TOKEN required by the WMIC Server. It is valid to omit the <TOKEN> line.
+ The legacy WMIC client AUTHFILE format is also supported.
+
+REQUIRED OPTIONS FOR LEGACY WMIC CLIENT
+ These only apply if using the legacy wmic client
+ you must specifiy a username/password/domain in one of two ways. The use of -u DOMAIN/USER -p PASSWORD always overrides the values contained in -A AUTHFILE
  -u DOMAIN/USER  specify the DOMAIN (optional) and USER that has permission to execute WMI queries on HOSTNAME
 
  -p PASSWORD  the PASSWORD for USER
@@ -46,8 +67,6 @@ You must specifiy a username/password/domain in one of two ways. The use of -u D
          domain=DOMAIN
 
        Set your own values for USERNAME, PASSWORD and DOMAIN. DOMAIN may be nothing.
-
- -m MODE  the check mode. The list of valid MODEs and a description is shown below
 
 COMMONLY USED OPTIONS
  -s SUBMODE  the submode. Some MODEs have one or more submodes. These are also described below.
@@ -69,81 +88,84 @@ COMMONLY USED OPTIONS
 LESS COMMONLY USED OPTIONS
  -b BYTEFACTOR  BYTEFACTOR is either 1000 or 1024 and is used for conversion units eg bytes to GB. Default is 1024.
 
- -t TIMEOUT  specify the number of seconds before the plugin will timeout. Some WMI queries take longer than others and network links with high latency may also require you to increase this from the default value of 15
-
- --includedata DATASPEC  specify data values that are to be included. See the section below on INCLUDING AND EXCLUDING WMI DATA
+ -d  Enable debug. Use this to see a lot more of what is going on including the exact WMI Query and results. User/passwords should be masked in the resulting output unless -z is specified.
 
  --excludedata DATASPEC  specify data values that are to be excluded. See the section below on INCLUDING AND EXCLUDING WMI DATA
 
- --nodatamode  Controls how the plugin responds when no data is returned by the WMI query. Normally, when no data is returned from the WMI query, the plugin returns an Unknown error. If you specify this option, then no data is not an error condition anymore and you can use WARN/CRIT checking on the _ItemCount field. This is only useful for some checks eg checkfilesize where you might get no data back from the WMI query when the file is not found, but getting no data back is not an error.
-
- --nodataexit NODATAEXIT  specify the plugin status result if the WMI Query returns no data. Ignored if --nodatamode is set. Valid values are 0 for OK, 1 for Warning, 2 for Critical (Default) or 3 for Unknown. Only used for some checks. All checks from the ini file can use this.
-
- --nodatastring NODATASTRING  specify the string that tha plugin will display if the WMI Query returns no data. Ignored if --nodatamode is set. Only used for some checks where the use of NODATAEXIT is valid. All checks from the ini file can use this.
-
- -y DELAY  Specify the delay between 2 consecutive WMI queries that are run in a single call to the plugin. Defaults are set for certain checks. Only valid if --nokeepstate used.
-
- --namespace WMINAMESPACE  Specify the WMI Namespace. eg root/MicrosoftDfs. The default is root/cimv2. Use '/' (forward slash) instead of '\\' (backslash).
-
  --extrawmicarg EXTRAWMICARG  Specify additional arguments to be passed to the wmic command. The arguments are passed directly and must be complete and understood by wmic. In order to assist with escaping of quotes, all # are translated to ". To pass --option="client ntlmv2 auth"=Yes to wmic specifiy --extrawmicarg "--option=#client ntlmv2 auth#=Yes". This option can be specified multiple times to pass multiple arguments to wmic. If you are using the conf file setting for extra wmic arguments then any options specified here are added to the ones specified in the conf file.
-
- --IgnoreZeroSizedDrives  By default zero size drive or volumes are included in volume and drive checks. Adding this option ignores them.
-
- --IgnoreMyOutDatedPerlModuleVersions  Ignores warnings about outdated perl modules
-
- --IgnoreAuthFileWarnings  Ignores warnings about problems reading authentication files (specified using the -A option)
-
- --inihelp  Show the help from the INIFILE for the specified MODE/SUBMODE. If specified without MODE/SUBMODE, this shows a quick short summary of all valid MODE/SUBMODEs in the ini files.
-
- --inifile=INIFILE  INIFILE is the full path of an ini file to use. The use of --inidir is preferred over this option.
-
- --inidir=INIDIR  INIDIR is the full path of an ini directory to use. The plugin reads files ending in .ini in INIDIR in the default directory order. The INIFILE is read first, if defined, then each .ini file found in INIDIR. Ini files read later merge with earlier ini files. For any settings that exist in one or more files, the last one read is set.
-
- --nokeepstate  disables the default mode of keeping state between plugin runs.
-
- --keepexpiry EXPIRY  EXPIRY is the number of seconds after which the plugin assumes that the previously collected data has expired. The default is 3600 sec. You should run your plugin more frequently than this value or set EXPIRY higher.
-
- --keepid KID  KID is a unique identifier. This is normally not needed. In order to keep state between plugin runs, the data is written to a file. In order to stop collisions between different plugin runs, and hence incorrect calculations,  the filename is unique based on the checkmode, hostname, arguments passed etc. If for some reason these are not sufficient and you are experiencing collisions, you can add a unique KID to each plugin check to ensure uniqueness.
-
- --joinexpiry EXPIRY  EXPIRY is the number of seconds after which the plugin assumes that the previously collected join data has expired. The default is 3600 sec. Join data that is defined as being reasonably static by whomever created the check will only get refreshed every EXPIRY seconds.
-
- --helperexpiry EXPIRY  EXPIRY is the number of seconds after which the plugin assumes that the previously collected helper query data has expired. The default is 3600 sec. Helper query data that is defined as being reasonably static by whomever created the check will only get refreshed every EXPIRY seconds.
-
- -z  Provide full specification warning and critical values for performance data. Not all performance data processing software can handle this eg PNP4Nagios. If this is used with -d then usernames and passwords will be shown rather than being masked (useful if you want to cut and paste the exact wmic command for testing).
-
- -d  Enable debug. Use this to see a lot more of what is going on including the exact WMI Query and results. User/passwords should be masked in the resulting output unless -z is specified.
-
- --forcewmiccommand  Force the use of the wmic binary instead of using the WMI Client library. The WMI Client library is used automatically (since it is faster) if it is available on the host running check_wmi_plus. You can tell if you are using the library or the binary wmic by examining the output of -d.
-
- --ishowusage  Pro Version only. Show usage stats in plugin output.
-
- --icollectusage  Pro Version only. Collect usage stats.
-
- --logswitch  Pro Version only. Switch usage DB file.
-
- --logkeep  Pro Version only. do not remove the Usage DB file you are switching to.
-
- --logsuffix SUFFIX  Pro Version only. Switch to the Usage DB file using SUFFIX.
-
- --logshow  Pro Version only. Show current Usage DB file.
-
- --variablesdisabled  Pro Version only. Disable the use of static variables (from the ini files).
-
-  --forceVariablesCriteriaSpec  Pro Version only. Normally warning and critical criteria specifications are not subject to static variable substitutions. This forces substitutions to be applied to these as well.
-
- --forceiniopen  Force reading of the ini files. You may want to do this if you are doing a non-ini file check and you are using global variables defined in an ini file. Only use this if you really need it since it makes each invocation of the plugin a lot slower (unless you are doing an ini file check already).
-
- --forcetruncateoutput LEN  Restrict the length of the plugin output to LEN bytes. The default value is 8192.
-
- --Mapexit MAPSPEC  Pro Version only. Change the exit code plugin would normally use based on MAPSPEC. MAPSPEC format is one of X:Y or X:Y:REGEX, where X is the original exit code and Y is the new exit code. If REGEX is specified then the exit code mapping is only done if the plugin output matches the case insensitive regular expression REGEX. Multiple --Mapexit parameters can be specified. Order is important as the first one that matches will be used.
 
  --fieldshow  Show the list of fields available/used for a specific check. Run the check normally and add this option. The list of fields will be shown above the plugin output. This is useful when configuring checks. It shows all the fields available for the specific check. For example, use it to show which fields you can use for --includedata etc
 
  --filterinirowsbystatus FILTERSTATUS  Filter ini-based checks by their status. This is useful for checks that return many rows and where you may only want to show results that are not ok (for example). This only applies to the per row results and not to the overall state. FILTERSTATUS is a regular expression of Nagios return codes that you wish to display. Nagios return codes are 0-3, where 0=OK, 1=WARNING, 2=CRITICAL, 3=UNKNOWN. In order to display return codes 1 or 2 only a regular expression like 1|2 would be used. To display only OK states (return code 0) a regular expression of 0 would suffice.
 
+ --forceiniopen  Force reading of the ini files. You may want to do this if you are doing a non-ini file check and you are using global variables defined in an ini file. Only use this if you really need it since it makes each invocation of the plugin a lot slower (unless you are doing an ini file check already).
+
+ --forcetruncateoutput LEN  Restrict the length of the plugin output to LEN bytes. The default value is 8192.
+
+ --forceVariablesCriteriaSpec  Pro Version only. Normally warning and critical criteria specifications are not subject to static variable substitutions. This forces substitutions to be applied to these as well.
+
+ --forcewmiccommand  Force the use of the wmic binary instead of using the WMI Client library. The WMI Client library is used automatically (since it is faster) if it is available on the host running check_wmi_plus. You can tell if you are using the library or the binary wmic by examining the output of -d.
+
+ --helperexpiry EXPIRY  EXPIRY is the number of seconds after which the plugin assumes that the previously collected helper query data has expired. The default is 3600 sec. Helper query data that is defined as being reasonably static by whomever created the check will only get refreshed every EXPIRY seconds.
+
+ --icollectusage  Pro Version only. Collect usage stats.
+
+ --includedata DATASPEC  specify data values that are to be included. See the section below on INCLUDING AND EXCLUDING WMI DATA
+
+ --IgnoreAuthFileWarnings  Ignores warnings about problems reading authentication files (specified using the -A option). Applies only when also using --legacywmicclient
+
+ --IgnoreMyOutDatedPerlModuleVersions  Ignores warnings about outdated perl modules
+
+ --IgnoreZeroSizedDrives  By default zero size drive or volumes are included in volume and drive checks. Adding this option ignores them.
+
+ --inidir=INIDIR  INIDIR is the full path of an ini directory to use. The plugin reads files ending in .ini in INIDIR in the default directory order. The INIFILE is read first, if defined, then each .ini file found in INIDIR. Ini files read later merge with earlier ini files. For any settings that exist in one or more files, the last one read is set.
+
+ --inifile=INIFILE  INIFILE is the full path of an ini file to use. The use of --inidir is preferred over this option.
+
+ --inihelp  Show the help from the INIFILE for the specified MODE/SUBMODE. If specified without MODE/SUBMODE, this shows a quick short summary of all valid MODE/SUBMODEs in the ini files.
+
  --iRequireAllWarnings  use this option to require that all of the warning criteria must be met before the plugin will exit with a warning status
 
  --iRequireAllCriticals  use this option to require that all of the critical criteria must be met before the plugin will exit with a critical status.
+
+ --ishowusage  Pro Version only. Show usage stats in plugin output.
+
+ --joinexpiry EXPIRY  EXPIRY is the number of seconds after which the plugin assumes that the previously collected join data has expired. The default is 3600 sec. Join data that is defined as being reasonably static by whomever created the check will only get refreshed every EXPIRY seconds.
+
+ --keepexpiry EXPIRY  EXPIRY is the number of seconds after which the plugin assumes that the previously collected data has expired. The default is 3600 sec. You should run your plugin more frequently than this value or set EXPIRY higher.
+
+ --keepid KID  KID is a unique identifier. This is normally not needed. In order to keep state between plugin runs, the data is written to a file. In order to stop collisions between different plugin runs, and hence incorrect calculations,  the filename is unique based on the checkmode, hostname, arguments passed etc. If for some reason these are not sufficient and you are experiencing collisions, you can add a unique KID to each plugin check to ensure uniqueness.
+
+ --legacywmicclient  use the legacy wmic client ie the single binary command "wmic".
+
+ --logkeep  Pro Version only. do not remove the Usage DB file you are switching to.
+
+ --logshow  Pro Version only. Show current Usage DB file.
+
+ --logsuffix SUFFIX  Pro Version only. Switch to the Usage DB file using SUFFIX.
+
+ --logswitch  Pro Version only. Switch usage DB file.
+
+ --Mapexit MAPSPEC  Pro Version only. Change the exit code plugin would normally use based on MAPSPEC. MAPSPEC format is one of X:Y or X:Y:REGEX, where X is the original exit code and Y is the new exit code. If REGEX is specified then the exit code mapping is only done if the plugin output matches the case insensitive regular expression REGEX. Multiple --Mapexit parameters can be specified. Order is important as the first one that matches will be used.
+
+ --namespace WMINAMESPACE  Specify the WMI Namespace. eg root/MicrosoftDfs. The default is root/cimv2. Use '/' (forward slash) instead of '\\' (backslash).
+
+ --nodataexit NODATAEXIT  specify the plugin status result if the WMI Query returns no data. Ignored if --nodatamode is set. Valid values are 0 for OK, 1 for Warning, 2 for Critical (Default) or 3 for Unknown. Only used for some checks. All checks from the ini file can use this.
+
+ --nodatamode  Controls how the plugin responds when no data is returned by the WMI query. Normally, when no data is returned from the WMI query, the plugin returns an Unknown error. If you specify this option, then no data is not an error condition anymore and you can use WARN/CRIT checking on the _ItemCount field. This is only useful for some checks eg checkfilesize where you might get no data back from the WMI query when the file is not found, but getting no data back is not an error.
+
+ --nodatastring NODATASTRING  specify the string that tha plugin will display if the WMI Query returns no data. Ignored if --nodatamode is set. Only used for some checks where the use of NODATAEXIT is valid. All checks from the ini file can use this.
+
+ --nokeepstate  disables the default mode of keeping state between plugin runs.
+
+ -t TIMEOUT  specify the number of seconds before the plugin will timeout. Some WMI queries take longer than others and network links with high latency may also require you to increase this from the default value of 15
+
+ --variablesdisabled  Pro Version only. Disable the use of static variables (from the ini files).
+
+ -y DELAY  Specify the delay between 2 consecutive WMI queries that are run in a single call to the plugin. Defaults are set for certain checks. Only valid if --nokeepstate used.
+
+ -z  Provide full specification warning and critical values for performance data. Not all performance data processing software can handle this eg PNP4Nagios. If this is used with -d then usernames and passwords will be shown rather than being masked (useful if you want to cut and paste the exact wmic command for testing).
+
 KEEPING STATE
 This only applies to checks that need to perform 2 WMI queries to get a complete result eg checkcpu, checkio, checknetwork etc. Keeping State is used by default.
 
@@ -218,7 +240,7 @@ The convention used for field names in this plugin is as follows:
    6. alert is raised if metric is outside start and end range (inclusive of endpoints)
    7. if range starts with "@", then alert if inside this range (inclusive of endpoints)
    8. The start and end values can use multipliers from the following list:
-       or the time-based multipliers sec, min, mth, wk, yr, day, hr.
+       or the time-based multipliers day, min, mth, wk, hr, sec, yr.
       The time-based multipliers are normally used where the data is in seconds.
       eg 1G for 1 x 10^9 or 2.5k for 2500
       eg 1wk for 1 week, 3.5day for 3.5 days etc
@@ -358,14 +380,14 @@ checkeventlog
 
 checkfileage
    ARG1  full path to the file. Use '/' (forward slash) instead of '\\' (backslash).
-   ARG2  set this to one of the time multipliers (sec, min, mth, wk, yr, day, hr)
+   ARG2  set this to one of the time multipliers (day, min, mth, wk, hr, sec, yr)
       This becomes the display unit and the unit used in the performance data. Default is hr.
       -z can not be used for this mode.
    WARN/CRIT  can be used as described below.
       The only valid Warning/Critical Field is _FileAge, so you don't even need to specify it!
 
       The warning/critical values should be specified in seconds. However you can use the time multipliers
-      (sec, min, mth, wk, yr, day, hr) to make it easier to use
+      (day, min, mth, wk, hr, sec, yr) to make it easier to use
 
       eg instead of putting -w 3600 you can use -w 1hr
 
@@ -392,7 +414,7 @@ checkfoldersize
    If you specify --nodatamode then you can use WARN/CRIT checking on the _ItemCount. _ItemCount should only ever be 0 or 1.
       This allows you to control how the plugin responds to non-existant files.
       Valid Warning/Critical Fields are: _FolderSize (Default), _ItemCount.
-      -
+
 checkgroup
    WARN/CRIT  can be used as described below.
       Valid Warning/Critical Fields are: _ItemCount (Default), _ItemChange, LocalAccount, Status
@@ -585,7 +607,7 @@ checkuptime
    WARN/CRIT  can be used as described below.
       The only valid Warning/Critical Field is _UptimeSec, so you don't even need to specify it!
 
-      The warning/critical values should be specified in seconds. However you can use the time multipliers (sec, min, mth, wk, yr, day, hr) to make it easier to use.
+      The warning/critical values should be specified in seconds. However you can use the time multipliers (day, min, mth, wk, hr, sec, yr) to make it easier to use.
 
       eg instead of putting -w 1800 you can use -w 30min
 
