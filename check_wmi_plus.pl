@@ -43,7 +43,7 @@ use lib "/usr/lib64/nagios/plugins";
 #================================= DECLARATIONS ===============================
 #==============================================================================
 
-our $VERSION=1.67;
+our $VERSION=1.68;
 
 # which version of PRO (if used does this require)
 our $requires_PRO_VERSION=1.32;
@@ -926,8 +926,8 @@ my $wmi_ini=();
 # if it is not there we are probably running from the command line
 my $running_within_nagios=$ENV{'NAGIOS_PLUGIN'} || '';
 
-if (! -x $wmic_command) {
-   print "This plugin requires the linux implementation of wmic eg from zenoss.\nOnce wmic is installed, configure its location by setting the \$wmic_command variable in '$conf_file'.";
+if ($opt_use_legacy_wmic_client && ! -x $wmic_command) {
+   print "This plugin requires the linux implementation of wmic eg from zenoss.\nOnce wmic is installed, configure its location by setting the \$wmic_command variable in '$conf_file'. Note that wmic is the legacy method for performing WMI queries.";
    finish_program($ERRORS{'UNKNOWN'});
 }
 
@@ -3428,7 +3428,7 @@ if ($data_errors) {
    } elsif ($data_errors=~/Name or service not known/i) {
       $temp_plugin_output.=" The target host ($the_arguments{_host}) might not be reachable over the network. Is it down? Is $the_arguments{_host} the correct hostname?. The host might even be up but just too busy. Wmic error text on the next line.\n";
    } elsif ($data_errors=~/Connect call failed/i) {
-      $temp_plugin_output.=" The target host ($the_arguments{_host}) did not allow our network connection. It is a valid name/IP Address. A firewall might be blocking us. There might be some critical services not running. Is it even running Windows?  Wmic error text on the next line.\n";
+      $temp_plugin_output.=" The target host ($the_arguments{_host}) did not allow our network connection. Is it running? It seems to be a valid name/IP Address. A firewall might be blocking us. There might be some critical services not running. Is it even running Windows?  Wmic error text on the next line.\n";
    } elsif ($data_errors=~/Problem with connection to target host/i) {
       $temp_plugin_output.=" The target host ($the_arguments{_host}) might not be reachable over the network for WMI calls. A firewall might be blocking us. Wmic error text on the next line.\n";
    } elsif ($data_errors=~/Problem with the wmi query on the target host/i) {

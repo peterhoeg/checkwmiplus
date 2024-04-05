@@ -1,4 +1,4 @@
-check_wmi_plus v1.67
+check_wmi_plus v1.68
 For installation details and more downloads see http://www.edcint.co.nz/checkwmiplus
 The --help output follows -
 
@@ -240,7 +240,7 @@ The convention used for field names in this plugin is as follows:
    6. alert is raised if metric is outside start and end range (inclusive of endpoints)
    7. if range starts with "@", then alert if inside this range (inclusive of endpoints)
    8. The start and end values can use multipliers from the following list:
-       or the time-based multipliers day, min, mth, wk, hr, sec, yr.
+       or the time-based multipliers min, day, wk, hr, sec, yr, mth.
       The time-based multipliers are normally used where the data is in seconds.
       eg 1G for 1 x 10^9 or 2.5k for 2500
       eg 1wk for 1 week, 3.5day for 3.5 days etc
@@ -380,14 +380,14 @@ checkeventlog
 
 checkfileage
    ARG1  full path to the file. Use '/' (forward slash) instead of '\\' (backslash).
-   ARG2  set this to one of the time multipliers (day, min, mth, wk, hr, sec, yr)
+   ARG2  set this to one of the time multipliers (min, day, wk, hr, sec, yr, mth)
       This becomes the display unit and the unit used in the performance data. Default is hr.
       -z can not be used for this mode.
    WARN/CRIT  can be used as described below.
       The only valid Warning/Critical Field is _FileAge, so you don't even need to specify it!
 
       The warning/critical values should be specified in seconds. However you can use the time multipliers
-      (day, min, mth, wk, hr, sec, yr) to make it easier to use
+      (min, day, wk, hr, sec, yr, mth) to make it easier to use
 
       eg instead of putting -w 3600 you can use -w 1hr
 
@@ -607,7 +607,7 @@ checkuptime
    WARN/CRIT  can be used as described below.
       The only valid Warning/Critical Field is _UptimeSec, so you don't even need to specify it!
 
-      The warning/critical values should be specified in seconds. However you can use the time multipliers (day, min, mth, wk, hr, sec, yr) to make it easier to use.
+      The warning/critical values should be specified in seconds. However you can use the time multipliers (min, day, wk, hr, sec, yr, mth) to make it easier to use.
 
       eg instead of putting -w 1800 you can use -w 30min
 
